@@ -1,0 +1,9 @@
+{
+  "name": "work-tracker",
+  "private": true,
+  "description": "Institute-wide work tracker: static frontend for GitHub Pages, Google Apps Script backend",
+  "scripts": {
+    "build": "sh tools/build.sh",
+    "test": "node tests/core.test.js && node tests/gas.test.js && node tests/ui.test.js && node tests/remote.test.js"
+  }
+}

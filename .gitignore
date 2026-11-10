@@ -1,0 +1,9 @@
+# Never commit staff data. The roster lives only in the private Google Sheet.
+*.xlsx
+*.xls
+*.csv
+*.tsv
+roster*
+node_modules/
+.clasp.json
+.DS_Store
