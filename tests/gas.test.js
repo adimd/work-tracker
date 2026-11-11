@@ -5,6 +5,7 @@ const ctx = { Date, Math, JSON, String, Number, Object, Array, Error, RegExp, en
 vm.createContext(ctx);
 const ss = install(ctx, props);
 vm.runInContext(fs.readFileSync(__dirname + '/../assets/core.js', 'utf8').replace(/^var Core/m, 'var Core') , ctx);
+vm.runInContext(fs.readFileSync(__dirname + '/../assets/insights.js', 'utf8'), ctx);
 vm.runInContext(fs.readFileSync(__dirname + '/../apps-script/Code.gs', 'utf8'), ctx);
 const call = (body, params) => JSON.parse(ctx.doPost({ postData: { contents: JSON.stringify(body) }, parameter: params || {} }).text);
 
@@ -89,4 +90,25 @@ assert(ctx.fetched.every(f => f.url.includes('919000000001')), 'still only the t
 delete props.TEST_PHONE; const before = ctx.fetched.length;
 call({ action: 'act', token: tok, name: 'createItem', payload: { title: 'Another task for Latha', assigneeId: latha.id } });
 assert.equal(ctx.fetched.length, before, 'held when no TEST_PHONE');
+// ---- summaries
+console.log(ctx.installTriggers());
+let sm = call({ action: 'summarize', token: tok, payload: { type: 'weekly', scopeType: 'org', period: 'week' } });
+assert(sm.ok && sm.data.source === 'template', JSON.stringify(sm));
+sm = call({ action: 'summarize', token: atok, payload: { type: 'weekly', scopeType: 'org', period: 'week' } });
+assert(!sm.ok, 'staff cannot summarise the org');
+sm = call({ action: 'summarize', token: atok, payload: { type: 'term', scopeType: 'person', scopeId: latha.id, period: 'term' } });
+assert(sm.ok, 'staff can summarise themselves');
+props.AI_PROVIDER = 'gemini'; props.AI_API_KEY = 'k';
+sm = call({ action: 'summarize', token: tok, payload: { type: 'initiative', scopeType: 'function', scopeId: 'Academics', period: 'month' } });
+assert(sm.ok && sm.data.source === 'AI: gemini' && /AI SUMMARY/.test(sm.data.text), JSON.stringify(sm));
+assert(ctx.aiCalls[0].opt.headers['x-goog-api-key'] === 'k' && !/key=/.test(ctx.aiCalls[0].url), 'key in header not URL');
+const sent = JSON.parse(ctx.aiCalls[0].opt.payload); assert(/ONLY the facts/.test(sent.systemInstruction.parts[0].text));
+props.AI_PROVIDER = 'claude';
+sm = call({ action: 'summarize', token: tok, payload: { type: 'weekly', scopeType: 'person', scopeId: latha.id, period: 'week' } });
+assert(sm.ok && /claude/.test(sm.data.text), JSON.stringify(sm));
+const bs = call({ action: 'bootstrap', token: atok }); assert(bs.data.summaries.every(r => r.scopeType === 'person' && r.scopeId === latha.id), 'staff only sees own summaries');
+ctx.weeklyJob();
+r = call({ action: 'queueTermSummaries', token: tok }); assert(r.ok && r.data.queued > 3);
+ctx.hourlyJob(); assert.equal(props.TERM_QUEUE, '', 'queue drained');
+console.log('summaries stored', ss.getSheetByName('summaries').data.length - 1, 'AI calls', ctx.aiCalls.length);
 console.log('ALL GAS TESTS PASSED');

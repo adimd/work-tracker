@@ -128,3 +128,36 @@ pre.digest { white-space: pre-wrap; background: var(--cream); border-radius: 8px
 .sub-tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
 .sub-tabs button { border: 1px solid #cfc8bb; background: #fff; border-radius: 20px; padding: 6px 14px; cursor: pointer; color: var(--navy); }
 .sub-tabs button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+/* summaries */
+.summary .sumtext { white-space: pre-wrap; line-height: 1.6; font-size: 14.5px; }
+.summary { border-left: 4px solid var(--amber); }
+
+/* organisation drill-down */
+.crumbs { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.crumbs a { color: var(--muted); }
+.minis { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0 0 18px; font-size: 14px; color: var(--muted); }
+.minis b { color: var(--navy); font-size: 18px; font-family: 'Source Serif 4', Georgia, serif; font-weight: 500; margin-right: 4px; }
+.minis .bad b, .fn-nums .bad b { color: var(--red); }
+.fn-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.fn-card { text-align: left; cursor: pointer; font: inherit; color: var(--navy); }
+.fn-card:hover { border-color: var(--amber); }
+.fn-card.hot { border-top: 4px solid var(--red); }
+.fn-name { font-family: 'Source Serif 4', Georgia, serif; font-size: 20px; }
+.fn-nums { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; font-size: 11.5px; color: var(--muted); }
+.fn-nums b { display: block; font-size: 18px; color: var(--navy); font-weight: 600; }
+
+/* recognition */
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.wall-name { font-family: 'Source Serif 4', Georgia, serif; font-size: 19px; margin: 2px 0 4px; }
+
+/* printing reports */
+.print-title { display: none; }
+@media print {
+  header.top, .banner, .noprint, nav, .btn, [data-sum], #toast { display: none !important; }
+  body { background: #fff; }
+  main { padding: 0; max-width: none; }
+  .print-title { display: block; margin-bottom: 12px; }
+  .card { break-inside: avoid; border-color: #ccc; }
+  .grid2 { grid-template-columns: 1fr 1fr; }
+}

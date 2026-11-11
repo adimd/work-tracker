@@ -13,7 +13,7 @@ var Core = (function () {
 
   var SCHEMA = {
     people: ['id', 'name', 'designation', 'grade', 'entity', 'level', 'managerId', 'verifierId', 'homeTeamId', 'roles', 'phone', 'email', 'lang', 'status', 'leaveFrom', 'leaveUntil', 'coverId', 'notes'],
-    teams: ['id', 'name', 'entity', 'type', 'leadId', 'deputyId', 'adminIds', 'endDate', 'initiativeId', 'active'],
+    teams: ['id', 'name', 'entity', 'function', 'type', 'leadId', 'deputyId', 'adminIds', 'endDate', 'initiativeId', 'active'],
     memberships: ['id', 'teamId', 'personId', 'role'],
     priorities: ['id', 'title', 'term', 'ownerId', 'active'],
     initiatives: ['id', 'title', 'priorityId', 'ownerId', 'goal', 'endDate', 'status'],
@@ -22,7 +22,9 @@ var Core = (function () {
     duties: ['id', 'title', 'sopRef', 'ownerType', 'ownerId', 'freq', 'dow', 'dom', 'time', 'evidenceHint', 'initiativeId', 'active'],
     decisions: ['id', 'initiativeId', 'decision', 'note', 'byId', 'at', 'followups'],
     settings: ['key', 'value'],
-    outbox: ['id', 'toId', 'text', 'kind', 'itemId', 'at', 'sentAt', 'error']
+    outbox: ['id', 'toId', 'text', 'kind', 'itemId', 'at', 'sentAt', 'error'],
+    summaries: ['id', 'type', 'scopeType', 'scopeId', 'entity', 'from', 'to', 'text', 'source', 'createdAt', 'createdBy'],
+    reviews: ['id', 'teamId', 'date', 'heldBy', 'notes', 'commitments']
   };
 
   var DEFAULT_SETTINGS = {
@@ -43,7 +45,9 @@ var Core = (function () {
     workStart: '8',
     workEnd: '18',
     weekend: '0',
-    holidays: ''
+    holidays: '',
+    termStart: '',
+    functions: 'Academics|Administration|Operations|Support|Café|Marketing, IT and finance|Leadership'
   };
 
   var STATUS = {
@@ -577,7 +581,7 @@ var Core = (function () {
     need(String(p.name || '').trim(), 'Team name is required');
     need(TEAM_TYPES[p.type || 'home'], 'Unknown team type');
     if (existing && existing.leadId && !p.leadId) need(false, 'A team must always have a Lead');
-    var row = { name: p.name, entity: p.entity || '', type: p.type || 'home', leadId: p.leadId || '', deputyId: p.deputyId || '', adminIds: joinList(p.adminIds), endDate: p.endDate || '', initiativeId: p.initiativeId || '', active: p.active === false || p.active === 'false' ? 'false' : 'true' };
+    var row = { name: p.name, entity: p.entity || '', 'function': p['function'] || '', type: p.type || 'home', leadId: p.leadId || '', deputyId: p.deputyId || '', adminIds: joinList(p.adminIds), endDate: p.endDate || '', initiativeId: p.initiativeId || '', active: p.active === false || p.active === 'false' ? 'false' : 'true' };
     if (existing) {
       if (row.active === 'false' && existing.active !== 'false') {
         var open = S.all('items').filter(function (it) { return it.teamId === existing.id && !it.assigneeId && OPEN.indexOf(it.status) >= 0; });
@@ -699,6 +703,23 @@ var Core = (function () {
     var me = person(S, meId);
     need(isSys(me) || hasRole(me, 'admin'), 'Not allowed');
     return { created: generateDuties(S, ctx) };
+  };
+
+  A.saveReview = function (S, meId, p, ctx) {
+    var t = byId(S.all('teams'))[p.teamId];
+    need(t, 'Team not found');
+    var me = person(S, meId);
+    need(isOwner(me) || t.leadId === meId || t.deputyId === meId || list(t.adminIds).indexOf(meId) >= 0, 'Only the team Lead, Deputy or Team Admin records the review');
+    var made = [];
+    (p.commitments || []).forEach(function (c) {
+      if (!c || !String(c.title || '').trim()) return;
+      var target = c.personId || meId;
+      var it = A.createItem(S, meId, { kind: 'followup', title: c.title, assigneeId: target, due: c.due || addDays(ctx.today, 7), notes: 'Commitment from the ' + t.name + ' weekly review', initiativeId: c.initiativeId || '' }, ctx);
+      made.push(it.id);
+    });
+    var row = S.insert('reviews', { id: uid('rv'), teamId: t.id, date: ctx.today, heldBy: meId, notes: p.notes || '', commitments: made.join(',') });
+    logEvent(S, '', meId, 'weekly review: ' + t.name, made.length + ' commitment(s)', ctx.now);
+    return row;
   };
 
   A.saveSettings = function (S, meId, p, ctx) {

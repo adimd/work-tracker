@@ -27,7 +27,7 @@ function install(g, props) {
   const ss = makeSpreadsheet();
   const cache = {};
   g.SpreadsheetApp = { getActiveSpreadsheet: () => ss, openById: () => ss };
-  g.PropertiesService = { getScriptProperties: () => ({ getProperty: k => props[k] || null }) };
+  g.PropertiesService = { getScriptProperties: () => ({ getProperty: k => props[k] || null, setProperty: (k, v) => { props[k] = v; } }) };
   g.CacheService = { getScriptCache: () => ({ get: k => cache[k] || null, put: (k, v) => { cache[k] = v; }, remove: k => { delete cache[k]; } }) };
   g.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
   g.Utilities = {
@@ -39,8 +39,16 @@ function install(g, props) {
   g.ContentService = { MimeType: { JSON: 'json' }, createTextOutput: t => ({ text: t, setMimeType() { return this; } }) };
   g.sentMail = []; g.fetched = [];
   g.MailApp = { sendEmail: (to, subj, body) => g.sentMail.push({ to, subj, body }) };
-  g.UrlFetchApp = { fetch: (url, opt) => { g.fetched.push({ url, opt }); return { getResponseCode: () => 200, getContentText: () => '{"result":true}' }; } };
-  g.ScriptApp = { getProjectTriggers: () => [], deleteTrigger() {}, newTrigger: () => ({ timeBased: () => ({ everyHours: () => ({ create() {} }), atHour: () => ({ everyDays: () => ({ create() {} }) }) }) }) };
+  g.aiCalls = [];
+  g.UrlFetchApp = { fetch: (url, opt) => {
+    if (/generativelanguage|anthropic|openai/.test(url)) {
+      g.aiCalls.push({ url, opt });
+      const body = /generativelanguage/.test(url) ? { candidates: [{ content: { parts: [{ text: 'AI SUMMARY: all good.' }] } }] } : /anthropic/.test(url) ? { content: [{ type: 'text', text: 'AI SUMMARY (claude).' }] } : { choices: [{ message: { content: 'AI SUMMARY (openai).' } }] };
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify(body) };
+    }
+    g.fetched.push({ url, opt }); return { getResponseCode: () => 200, getContentText: () => '{"result":true}' }; } };
+  g.ScriptApp = { WeekDay: { SATURDAY: 'SATURDAY' }, getProjectTriggers: () => [], deleteTrigger() {}, newTrigger: () => ({ timeBased: () => ({ everyHours: () => ({ create() {} }), atHour: () => ({ everyDays: () => ({ create() {} }) }), onWeekDay: () => ({ atHour: () => ({ create() {} }) }) }) }) };
+  g.PropertiesServiceSet = (k, v) => { props[k] = v; };
   g.console = console;
   return ss;
 }

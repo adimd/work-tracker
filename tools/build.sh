@@ -3,4 +3,5 @@
 set -e
 cd "$(dirname "$0")/.."
 { echo "// GENERATED from assets/core.js by tools/build.sh. Do not edit here: edit assets/core.js and rebuild."; cat assets/core.js; } > apps-script/Core.gs
-echo "apps-script/Core.gs updated"
+{ echo "// GENERATED from assets/insights.js by tools/build.sh. Do not edit here: edit assets/insights.js and rebuild."; cat assets/insights.js; } > apps-script/Insights.gs
+echo "apps-script/Core.gs and Insights.gs updated"

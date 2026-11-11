@@ -3,7 +3,8 @@
  *
  * Files in this Apps Script project:
  *   Code.gs   (this file: web API, login, Google Sheets storage, jobs, WhatsApp, roster import)
- *   Core.gs   (a copy of assets/core.js: all business rules, shared with the browser)
+ *   Core.gs      (a copy of assets/core.js: all business rules, shared with the browser)
+ *   Insights.gs  (a copy of assets/insights.js: functions, summary facts, templates, AI prompts)
  *
  * Script Properties (Project Settings › Script properties):
  *   SPREADSHEET_ID     optional; the Google Sheet that holds the data (defaults to the sheet this script is bound to)
@@ -21,6 +22,9 @@
  *                            no email is ever sent to staff. If TEST_PHONE is empty, nothing is sent at all.
  *                      live: messages go to the real people. Only set this after the pilot is approved.
  *   TEST_PHONE         your own WhatsApp number for test mode, e.g. 9198XXXXXXXX
+ *   AI_PROVIDER        optional: gemini, claude or openai. Leave empty to use template summaries (no AI).
+ *   AI_API_KEY         the API key for that provider
+ *   AI_MODEL           optional model name; defaults: gemini-2.5-flash, claude-haiku-5-5, gpt-4o-mini
  */
 
 var SESSION_HOURS = 6;
@@ -99,6 +103,13 @@ function route(body) {
     case 'runJobsNow':
       if (!Core.isSys(me)) throw userError('Not allowed');
       return withLock(function () { var r = Core.runJobs(S, new Date().toISOString()); r.sent = sendOutbox(S, true); return r; });
+    case 'summarize':
+      return withLock(function () { return summarize(new SheetStore(), meId, body.payload || {}); });
+    case 'queueTermSummaries':
+      if (!Core.isOwner(me)) throw userError('Only Owners can do this');
+      return queueTermSummaries(S);
+    case 'aiStatus':
+      return aiStatus();
     case 'act':
       return withLock(function () {
         var S2 = new SheetStore(); // fresh read inside the lock
@@ -149,6 +160,9 @@ function bootstrap(S, meId) {
     duties: S.all('duties'),
     decisions: S.all('decisions'),
     settings: S.all('settings'),
+    summaries: S.all('summaries').filter(function (r) { return Insights.canSee(S, meId, r.scopeType, r.scopeId, today); }).slice(-250),
+    reviews: S.all('reviews').filter(function (r) { return Core.isOwner(me) || Core.teamsLedBy(S, meId).some(function (t) { return t.id === r.teamId; }) || Core.teamMemberIds(S, r.teamId).indexOf(meId) >= 0; }),
+    ai: aiStatus(),
     whatsapp: !!PropertiesService.getScriptProperties().getProperty('WATI_TOKEN'),
     sendMode: sendMode()
   };
@@ -474,6 +488,118 @@ function runWhatsAppCommand(S, meId, text) {
   }
 }
 
+
+// ===================================================================== AI summaries
+
+var AI_DEFAULT_MODELS = { gemini: 'gemini-2.5-flash', claude: 'claude-haiku-5-5', openai: 'gpt-4o-mini' };
+
+function aiConfig() {
+  var props = PropertiesService.getScriptProperties();
+  var provider = String(props.getProperty('AI_PROVIDER') || '').toLowerCase().trim();
+  var key = props.getProperty('AI_API_KEY');
+  if (!AI_DEFAULT_MODELS[provider] || !key) return null;
+  return { provider: provider, key: key, model: props.getProperty('AI_MODEL') || AI_DEFAULT_MODELS[provider] };
+}
+function aiStatus() { var c = aiConfig(); return c ? { connected: true, provider: c.provider, model: c.model } : { connected: false }; }
+
+/** Calls the configured provider. Returns the text, or throws. */
+function aiGenerate(system, user) {
+  var c = aiConfig();
+  if (!c) throw new Error('No AI provider configured');
+  var res, data;
+  if (c.provider === 'gemini') {
+    res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(c.model) + ':generateContent', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true, headers: { 'x-goog-api-key': c.key },
+      payload: JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 700 } })
+    });
+    data = JSON.parse(res.getContentText() || '{}');
+    if (res.getResponseCode() >= 300) throw new Error('Gemini ' + res.getResponseCode() + ': ' + ((data.error && data.error.message) || '').slice(0, 200));
+    return ((((data.candidates || [])[0] || {}).content || {}).parts || []).map(function (p) { return p.text || ''; }).join('').trim();
+  }
+  if (c.provider === 'claude') {
+    res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true, headers: { 'x-api-key': c.key, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({ model: c.model, max_tokens: 700, temperature: 0.3, system: system, messages: [{ role: 'user', content: user }] })
+    });
+    data = JSON.parse(res.getContentText() || '{}');
+    if (res.getResponseCode() >= 300) throw new Error('Claude ' + res.getResponseCode() + ': ' + ((data.error && data.error.message) || '').slice(0, 200));
+    return (data.content || []).map(function (p) { return p.text || ''; }).join('').trim();
+  }
+  res = UrlFetchApp.fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true, headers: { Authorization: 'Bearer ' + c.key },
+    payload: JSON.stringify({ model: c.model, temperature: 0.3, max_tokens: 700, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
+  });
+  data = JSON.parse(res.getContentText() || '{}');
+  if (res.getResponseCode() >= 300) throw new Error('OpenAI ' + res.getResponseCode() + ': ' + ((data.error && data.error.message) || '').slice(0, 200));
+  return String((((data.choices || [])[0] || {}).message || {}).content || '').trim();
+}
+
+/** Builds facts, asks the AI (or uses the template), stores and returns the summary row. */
+function writeSummary(S, type, scopeType, scopeId, periodKind, entity, byId, custom) {
+  var today = Core.isoDate(new Date());
+  var range = Insights.periodRange(S, periodKind || 'week', today, custom);
+  var facts = Insights.facts(S, scopeType, scopeId, range, entity || '', today);
+  var text = '', source = 'template';
+  if (aiConfig()) {
+    try {
+      var pr = Insights.prompt(type, facts);
+      text = aiGenerate(pr.system, pr.user);
+      source = 'AI: ' + aiConfig().provider;
+    } catch (x) {
+      console.error(x);
+      source = 'template (AI unavailable: ' + String(x.message || x).slice(0, 80) + ')';
+    }
+  }
+  if (!text) text = Insights.templateText(facts);
+  return S.insert('summaries', { id: Core.uid('sm'), type: type, scopeType: scopeType, scopeId: scopeId || '', entity: entity || '', from: range.from, to: range.to, text: String(text).slice(0, 3000), source: source, createdAt: new Date().toISOString(), createdBy: byId || 'system' });
+}
+
+function summarize(S, meId, p) {
+  var today = Core.isoDate(new Date());
+  if (!Insights.SCOPES[p.scopeType]) throw userError('Unknown scope');
+  if (!Insights.canSee(S, meId, p.scopeType, p.scopeId, today)) throw userError('You cannot see a summary for this');
+  var type = Insights.SUMMARY_TYPES[p.type] ? p.type : 'custom';
+  var recent = S.all('summaries').filter(function (r) {
+    return r.scopeType === p.scopeType && r.scopeId === (p.scopeId || '') && r.type === type && (r.entity || '') === (p.entity || '') && (Date.now() - new Date(r.createdAt).getTime()) < 5 * 60000;
+  })[0];
+  if (recent) return recent; // at most one fresh summary per scope every 5 minutes
+  return writeSummary(S, type, p.scopeType, p.scopeId || '', p.period || 'week', p.entity || '', meId, p.custom);
+}
+
+function queueTermSummaries(S) {
+  var ids = S.all('people').filter(function (p) { return p.status !== 'left'; }).map(function (p) { return p.id; });
+  PropertiesService.getScriptProperties().setProperty('TERM_QUEUE', ids.join(','));
+  return { queued: ids.length, note: 'Term summaries are written in batches by the hourly job: about 25 people an hour.' };
+}
+
+function processTermQueue(S, started) {
+  var props = PropertiesService.getScriptProperties();
+  var q = Core.list(props.getProperty('TERM_QUEUE') || '');
+  var done = 0;
+  while (q.length && done < 25 && Date.now() - started < 240000) {
+    writeSummary(S, 'term', 'person', q.shift(), 'term', '', 'system');
+    done++;
+  }
+  props.setProperty('TERM_QUEUE', q.join(','));
+  return done;
+}
+
+/** Saturday afternoon: a weekly summary for every function and every home team. */
+function weeklyJob() {
+  withLock(function () {
+    var S = new SheetStore(), started = Date.now();
+    Insights.functions(S).forEach(function (fn) {
+      if (Date.now() - started > 270000) return;
+      if (Insights.scopePeople(S, 'function', fn, '').length) writeSummary(S, 'weekly', 'function', fn, 'week', '', 'system');
+    });
+    S.all('teams').filter(function (t) { return t.active !== 'false'; }).forEach(function (t) {
+      if (Date.now() - started > 300000) return;
+      if (Core.teamMemberIds(S, t.id).length) writeSummary(S, 'weekly', 'team', t.id, 'week', '', 'system');
+    });
+    writeSummary(S, 'weekly', 'org', '', 'week', '', 'system');
+  });
+}
+
 // ===================================================================== scheduled jobs
 
 /** Run once from the editor: creates the hourly and daily jobs. */
@@ -483,14 +609,16 @@ function installTriggers() {
   var S = new SheetStore();
   var hour = Number(Core.settings(S).digestHour || 8);
   ScriptApp.newTrigger('dailyJob').timeBased().atHour(hour).everyDays(1).create();
-  return 'Triggers installed: hourly, and daily at ' + hour + ':00';
+  ScriptApp.newTrigger('weeklyJob').timeBased().onWeekDay(ScriptApp.WeekDay.SATURDAY).atHour(16).create();
+  return 'Triggers installed: hourly, daily at ' + hour + ':00, and weekly on Saturday at 16:00';
 }
 
 function hourlyJob() {
   withLock(function () {
-    var S = new SheetStore();
+    var S = new SheetStore(), started = Date.now();
     Core.runJobs(S, new Date().toISOString());
     sendOutbox(S, false);
+    processTermQueue(S, started);
   });
 }
 
@@ -500,8 +628,11 @@ function dailyJob() {
     var now = new Date().toISOString(), today = Core.isoDate(new Date());
     Core.runJobs(S, now);
     Core.dailyReminders(S, now);
-    S.all('people').filter(function (p) { return Core.isOwner(p) && p.status !== 'left'; }).forEach(function (o) {
-      S.insert('outbox', { id: Core.uid('msg'), toId: o.id, text: Core.digestText(S, o.id, today), kind: 'digest', itemId: '', at: now, sentAt: '', error: '' });
+    var owners = S.all('people').filter(function (p) { return Core.isOwner(p) && p.status !== 'left'; });
+    var aiDigest = aiConfig() && owners.length ? writeSummary(S, 'digest', 'org', '', 'day', '', 'system') : null;
+    owners.forEach(function (o) {
+      var text = aiDigest && aiDigest.source.indexOf('AI') === 0 ? aiDigest.text : Core.digestText(S, o.id, today);
+      S.insert('outbox', { id: Core.uid('msg'), toId: o.id, text: text, kind: 'digest', itemId: '', at: now, sentAt: '', error: '' });
     });
     sendOutbox(S, true);
   });
@@ -612,7 +743,7 @@ function importRoster() {
     if (me.status === 'left') return;
     var tn = teamFor(r);
     var t = teamsByName[tn];
-    if (!t) { t = S.insert('teams', { id: Core.uid('tm'), name: tn, entity: /^cfal/i.test(r.entity) ? 'CFAL' : 'ELC / TLC School', type: 'home', leadId: '', deputyId: '', adminIds: '', endDate: '', initiativeId: '', active: 'true' }); teamsByName[tn] = t; }
+    if (!t) { t = S.insert('teams', { id: Core.uid('tm'), name: tn, entity: /^cfal/i.test(r.entity) ? 'CFAL' : 'ELC / TLC School', 'function': Insights.guessFunction(tn), type: 'home', leadId: '', deputyId: '', adminIds: '', endDate: '', initiativeId: '', active: 'true' }); teamsByName[tn] = t; }
     S.update('people', me.id, { homeTeamId: t.id });
   });
   // suggest a Lead: the most senior person in the team, else the most common manager

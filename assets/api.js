@@ -48,7 +48,9 @@ var API = (function () {
     return {
       meId: meId, today: today, demo: true,
       people: S.all('people'), teams: S.all('teams'), memberships: S.all('memberships'), priorities: S.all('priorities'),
-      initiatives: S.all('initiatives'), items: Core.visibleItems(S, meId, today), duties: S.all('duties'), decisions: S.all('decisions'), settings: S.all('settings'), whatsapp: false
+      initiatives: S.all('initiatives'), items: Core.visibleItems(S, meId, today), duties: S.all('duties'), decisions: S.all('decisions'), settings: S.all('settings'), whatsapp: false,
+      summaries: S.all('summaries').filter(function (r) { return Insights.canSee(S, meId, r.scopeType, r.scopeId, today); }),
+      reviews: S.all('reviews'), ai: { connected: false, demo: true }
     };
   }
 
@@ -98,6 +100,31 @@ var API = (function () {
     digest: function () {
       if (mode === 'demo') return later(function () { return Core.digestText(demo(), demoMe(), Core.isoDate(new Date())); });
       return call('digestPreview');
+    },
+    summarize: function (p) {
+      if (mode === 'demo') return later(function () {
+        var S = demo(), meId = demoMe(), today = Core.isoDate(new Date());
+        if (!Insights.canSee(S, meId, p.scopeType, p.scopeId, today)) throw { message: 'You cannot see a summary for this' };
+        var range = Insights.periodRange(S, p.period || 'week', today, p.custom);
+        var text = Insights.templateText(Insights.facts(S, p.scopeType, p.scopeId || '', range, p.entity || '', today));
+        var row = S.insert('summaries', { id: Core.uid('sm'), type: p.type || 'custom', scopeType: p.scopeType, scopeId: p.scopeId || '', entity: p.entity || '', from: range.from, to: range.to, text: text, source: 'template', createdAt: new Date().toISOString(), createdBy: meId });
+        saveDemo();
+        return row;
+      });
+      return call('summarize', p);
+    },
+    queueTermSummaries: function () {
+      if (mode === 'demo') return later(function () {
+        var S = demo(), today = Core.isoDate(new Date()), n = 0;
+        S.all('people').filter(function (x) { return x.status !== 'left'; }).forEach(function (x) {
+          var range = Insights.periodRange(S, 'term', today);
+          S.insert('summaries', { id: Core.uid('sm'), type: 'term', scopeType: 'person', scopeId: x.id, entity: '', from: range.from, to: range.to, text: Insights.templateText(Insights.facts(S, 'person', x.id, range, '', today)), source: 'template', createdAt: new Date().toISOString(), createdBy: 'system' });
+          n++;
+        });
+        saveDemo();
+        return { queued: n, note: 'Demo: written straight away.' };
+      });
+      return call('queueTermSummaries');
     },
     runJobs: function () {
       if (mode === 'demo') return later(function () { var r = Core.runJobs(demo(), new Date().toISOString()); Core.dailyReminders(demo(), new Date().toISOString()); saveDemo(); return r; });

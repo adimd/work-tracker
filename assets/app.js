@@ -315,9 +315,12 @@
     my: { label: 'My work', show: function () { return true; }, render: pageMy },
     team: { label: 'Team', show: function () { return isLead() || isAdmin(); }, render: pageTeam },
     help: { label: 'Needs help', show: function () { return isLead(); }, render: pageHelp, count: function () { return Core.signals(st.S, st.meId, st.today).filter(function (s) { return s.sev >= 2; }).length; } },
-    org: { label: 'Organisation', show: isOwner, render: pageOrg },
+    org: { label: 'Organisation', show: function () { return isOwner() || myFunctions().length > 0; }, render: pageOrg },
+    review: { label: 'Weekly review', show: function () { return reviewTeams().length > 0; }, render: pageReview },
     workload: { label: 'Workload', show: function () { return isLead(); }, render: pageWorkload },
     initiatives: { label: 'Priorities', show: function () { return true; }, render: pageInitiatives },
+    reports: { label: 'Reports', show: function () { return true; }, render: pageReports },
+    wall: { label: 'Recognition', show: function () { return true; }, render: pageWall },
     chart: { label: 'Org chart', show: function () { return true; }, render: pageChart },
     people: { label: 'People & teams', show: function () { return isSys() || isHR(); }, render: pagePeople },
     duties: { label: 'SOP duties', show: function () { return isAdmin(); }, render: pageDuties },
@@ -434,37 +437,205 @@
           (btns.length ? '<div class="btns">' + btns.map(function (b) { return '<button class="btn sm ' + b[2] + '" data-act="' + b[0] + '" data-id="' + esc(it.id) + '">' + esc(b[1]) + '</button>'; }).join('') + '</div>' : '') +
           (s.personId && !it ? '<div class="btns"><button class="btn sm secondary" data-person="' + esc(s.personId) + '">Open ' + esc(nm(s.personId).split(' ')[0]) + '</button></div>' : '') + '</div>';
       }).join('') : '<p class="empty">Nobody needs help right now.</p>') + '</div>' +
-      (isOwner() ? '<div class="card"><h2>This morning\'s WhatsApp digest</h2><pre class="digest" id="digest">Loading…</pre><div class="btns" style="margin-top:10px"><button class="btn sm secondary" id="copy-digest">Copy</button></div></div>' : '') + '</div>';
+      (isOwner() ? '<div class="stack">' + summaryCard({ scopeType: 'org', scopeId: '', type: 'digest', period: 'day', title: 'Today in a paragraph' }) + '<div class="card"><h2>This morning\'s WhatsApp digest</h2><pre class="digest" id="digest">Loading…</pre><div class="btns" style="margin-top:10px"><button class="btn sm secondary" id="copy-digest">Copy</button></div></div></div>' : '') + '</div>';
     if (isOwner()) {
       API.digest().then(function (t) { $('#digest').textContent = t; }).catch(function () { $('#digest').textContent = Core.digestText(st.S, st.meId, st.today); });
       $('#copy-digest').onclick = function () { try { navigator.clipboard.writeText($('#digest').textContent).then(function () { toast('Copied'); }, function () { toast('Copy not allowed here'); }); } catch (e) { toast('Copy not allowed here'); } };
     }
   }
 
-  // ---------------- Organisation
+  // ---------------- Summary cards (AI or template)
+  function latestSummary(scopeType, scopeId, entity, type) {
+    return (st.data.summaries || []).filter(function (r) { return r.scopeType === scopeType && (r.scopeId || '') === (scopeId || '') && (r.entity || '') === (entity || '') && (!type || r.type === type); })
+      .sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : -1; })[0];
+  }
+  function summaryCard(o) {
+    if (!Insights.canSee(st.S, st.meId, o.scopeType, o.scopeId, st.today)) return '';
+    var r = latestSummary(o.scopeType, o.scopeId, o.entity, o.type);
+    var ai = st.data.ai || {};
+    var src = r ? (r.source.indexOf('AI') === 0 ? 'Written by AI (' + r.source.slice(4) + ') from tracker data' : 'Written from tracker data' + (r.source.length > 8 ? ' · ' + r.source.slice(9) : '')) : '';
+    return '<div class="card summary"><div class="row" style="justify-content:space-between;align-items:flex-start"><h2 style="flex:3">' + esc(o.title || Insights.SUMMARY_TYPES[o.type] || 'Summary') + '</h2>' +
+      '<button class="btn sm secondary" style="flex:0 0 auto" data-sum=\'' + esc(JSON.stringify({ type: o.type, scopeType: o.scopeType, scopeId: o.scopeId || '', period: o.period || 'week', entity: o.entity || '' })) + '\'>' + (r ? 'Refresh' : 'Write summary') + '</button></div>' +
+      (r ? '<div class="sumtext">' + esc(r.text) + '</div><p class="meta" style="margin:10px 0 0">' + esc(src) + ' · ' + esc(fmtDate(r.from)) + ' to ' + esc(fmtDate(r.to)) + ' · ' + esc(fmtWhen(r.createdAt)) + '</p>'
+        : '<p class="empty">No summary yet. ' + (ai.connected ? 'The AI will write one from the tracker data.' : 'No AI is connected yet, so it will be written from a template using the same data.') + '</p>') + '</div>';
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-sum]');
+    if (!b) return;
+    var p = JSON.parse(b.dataset.sum);
+    b.disabled = true; b.textContent = 'Writing…';
+    API.summarize(p).then(function () { toast('Summary ready'); return load(); }).catch(function (er) { b.disabled = false; b.textContent = 'Try again'; handleErr(er); });
+  });
+
+  // ---------------- Organisation, split by function
+  function myFunctions() { return Insights.functions(st.S).concat(['Unassigned']).filter(function (fn) { return Insights.canSee(st.S, st.meId, 'function', fn, st.today); }); }
+  function entityBar() {
+    var ents = Insights.entities(st.S);
+    if (ents.length < 2) return '';
+    var cur = st.sub.ent || '';
+    return '<div class="sub-tabs">' + [['', 'Both entities']].concat(ents.map(function (x) { return [x, x]; })).map(function (e) { return '<button data-ent="' + esc(e[0]) + '" class="' + (e[0] === cur ? 'on' : '') + '">' + esc(e[1]) + '</button>'; }).join('') + '</div>';
+  }
+  function scopeStats(ids) {
+    var set = {}; ids.forEach(function (x) { set[x] = true; });
+    var its = st.data.items.filter(function (it) { return set[it.assigneeId]; });
+    var since = Core.addDays(st.today, -7);
+    var duties = its.filter(function (it) { return it.kind === 'duty' && it.due && it.due < st.today && it.due >= Core.addDays(st.today, -30); });
+    var onTime = duties.filter(function (it) { return it.completedAt && String(it.completedAt).slice(0, 10) <= it.due; }).length;
+    return {
+      people: ids.length, items: its,
+      open: its.filter(function (it) { return Core.OPEN.indexOf(it.status) >= 0 && Core.isCurrent(it, st.today); }).length,
+      overdue: its.filter(function (it) { return Core.isOverdue(it, st.today); }).length,
+      help: its.filter(function (it) { return it.status === 'blocked'; }).length,
+      review: its.filter(function (it) { return it.status === 'review'; }).length,
+      verified7: its.filter(function (it) { return it.status === 'verified' && String(it.verifiedAt).slice(0, 10) >= since; }).length,
+      duty: duties.length ? Math.round(onTime / duties.length * 100) : null
+    };
+  }
+  function statLine(s) {
+    return '<div class="minis"><span><b>' + s.people + '</b> people</span><span><b>' + s.verified7 + '</b> verified this week</span><span><b>' + s.open + '</b> open</span><span class="' + (s.overdue ? 'bad' : '') + '"><b>' + s.overdue + '</b> overdue</span><span class="' + (s.help ? 'bad' : '') + '"><b>' + s.help + '</b> need help</span>' + (s.duty !== null ? '<span><b>' + s.duty + '%</b> duties on time</span>' : '') + '</div>';
+  }
   function pageOrg(el) {
-    var items = st.data.items, o = Core.orgStats(st.S, items, st.today);
-    var kpi = function (n, l, warn) { return '<div class="card kpi' + (warn ? ' warn' : '') + '"><div class="n">' + (n === null ? '—' : n) + '</div><div class="l">' + esc(l) + '</div></div>'; };
-    var teams = st.data.teams.filter(function (t) { return t.active !== 'false'; });
-    var since = Core.addDays(st.today, -30);
-    var rows = teams.map(function (t) {
-      var ids = Core.teamMemberIds(st.S, t.id);
-      var its = items.filter(function (it) { return ids.indexOf(it.assigneeId) >= 0 || (it.teamId === t.id && !it.assigneeId); });
-      return { t: t, n: ids.length, open: its.filter(function (it) { return Core.OPEN.indexOf(it.status) >= 0; }).length, overdue: its.filter(function (it) { return Core.isOverdue(it, st.today); }).length, help: its.filter(function (it) { return it.status === 'blocked'; }).length, review: its.filter(function (it) { return it.status === 'review'; }).length, verified: its.filter(function (it) { return it.status === 'verified' && String(it.verifiedAt).slice(0, 10) >= since; }).length };
-    }).sort(function (a, b) { return (b.overdue + b.help * 2) - (a.overdue + a.help * 2); });
-    var duties = st.data.duties.filter(function (d) { return d.active !== 'false'; }).map(function (d) {
-      var its = items.filter(function (it) { return it.dutyId === d.id && it.due && it.due < st.today && it.status !== 'cancelled'; }).sort(function (a, b) { return a.due < b.due ? 1 : -1; }).slice(0, 8);
-      var on = its.filter(function (it) { return it.completedAt && String(it.completedAt).slice(0, 10) <= it.due; }).length;
-      return { d: d, n: its.length, rate: its.length ? Math.round(on / its.length * 100) : null };
-    });
-    var issues = Core.structureIssues(st.S, st.today);
-    el.innerHTML = '<div class="page-head"><div><h1>Organisation</h1><p class="lede">Both entities at a glance. Figures for the last 30 days where marked.</p></div></div>' +
-      '<div class="kpis">' + kpi(o.helpOpen, 'Open help requests', o.helpOpen > 0) + kpi(o.overdue, 'Overdue items', o.overdue > 0) + kpi(o.dutyOnTime === null ? null : o.dutyOnTime + '%', 'SOP duties on time (30 days)') + kpi(o.verifiedRate === null ? null : o.verifiedRate + '%', 'Done items verified (30 days)') + kpi(o.helpResponseHours === null ? null : o.helpResponseHours + 'h', 'Avg. help response (working h)') + kpi(o.contributions, 'Contributions logged (30 days)') + '</div>' +
-      card('Teams', rows.length, '<div class="scroll"><table><thead><tr><th>Team</th><th>Lead</th><th class="num">People</th><th class="num">Open</th><th class="num">Overdue</th><th class="num">Help</th><th class="num">Awaiting check</th><th class="num">Verified (30d)</th></tr></thead><tbody>' +
-        rows.map(function (r) { return '<tr class="click" data-team="' + esc(r.t.id) + '"><td>' + esc(r.t.name) + '<div class="meta">' + esc(r.t.entity) + ' · ' + esc(Core.TEAM_TYPES[r.t.type] || '') + '</div></td><td>' + esc(nm(r.t.leadId)) + '</td><td class="num">' + r.n + '</td><td class="num">' + r.open + '</td><td class="num' + (r.overdue ? ' bad' : '') + '">' + r.overdue + '</td><td class="num' + (r.help ? ' bad' : '') + '">' + r.help + '</td><td class="num">' + r.review + '</td><td class="num">' + r.verified + '</td></tr>'; }).join('') + '</tbody></table></div>') +
-      '<div class="grid2" style="margin-top:20px">' + card('SOP duties on time (last 8)', duties.length, duties.length ? '<table><tbody>' + duties.map(function (x) { return '<tr><td>' + esc(x.d.title) + '<div class="meta">' + esc(x.d.ownerType === 'team' ? teamName(x.d.ownerId) : nm(x.d.ownerId)) + '</div></td><td class="num' + (x.rate !== null && x.rate < 75 ? ' bad' : '') + '">' + (x.rate === null ? '—' : x.rate + '%') + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="empty">No SOP duties set up yet.</p>') +
-      card('Structure problems', issues.length, issues.length ? issues.slice(0, 12).map(function (i) { return '<div class="item">' + (i.personId ? '<span class="t" data-person="' + esc(i.personId) + '">' + esc(nm(i.personId)) + '</span>' : esc(teamName(i.teamId))) + '<div class="meta">' + esc(i.issue) + '</div></div>'; }).join('') + (issues.length > 12 ? '<p class="meta">…and ' + (issues.length - 12) + ' more on the People & teams page.</p>' : '') : '<p class="empty">None.</p>') + '</div>';
-    $$('[data-team]').forEach(function (r) { r.onclick = function () { st.sub.team = r.dataset.team; location.hash = 'team'; }; });
+    var ent = st.sub.ent || '';
+    var fns = myFunctions();
+    var fn = fns.indexOf(st.sub.orgFn) >= 0 ? st.sub.orgFn : (isOwner() ? '' : fns[0]);
+    var teamId = st.sub.orgTeam && teamById(st.sub.orgTeam) ? st.sub.orgTeam : '';
+    var crumbs = '<div class="crumbs">' + (isOwner() ? '<a href="#" data-crumb="">' + esc(Core.settings(st.S).orgName || 'Institute') + '</a>' : '') + (fn ? ' › <a href="#" data-crumb="fn">' + esc(fn) + '</a>' : '') + (teamId ? ' › ' + esc(teamName(teamId)) : '') + '</div>';
+    var html = '<div class="page-head"><div>' + crumbs + '<h1>' + esc(teamId ? teamName(teamId) : fn || 'Whole institute') + '</h1><p class="lede">' + (teamId ? 'One team: its people, its work and its weekly summary.' : fn ? 'Every team in this function, across ' + (ent || 'both entities') + '.' : 'The institute split by function. Choose a function to see its teams, then a team to see its people.') + '</p></div></div>' + entityBar();
+    if (teamId) {
+      var ids = Core.teamMemberIds(st.S, teamId).filter(function (id) { var p = Core.person(st.S, id); return p && (!ent || p.entity === ent); });
+      var stats = Core.teamStats(st.S, teamId, st.data.items, st.today).filter(function (s) { return ids.indexOf(s.personId) >= 0; });
+      html += statLine(scopeStats(ids)) + '<div class="grid2"><div class="stack">' + summaryCard({ scopeType: 'team', scopeId: teamId, type: 'weekly', title: 'This week in ' + teamName(teamId) }) + '</div><div class="stack">' +
+        card('People', stats.length, '<table><tbody>' + stats.map(function (s) { var p = Core.person(st.S, s.personId) || {}; return '<tr class="click" data-person="' + esc(s.personId) + '"><td>' + esc(p.name) + '<div class="meta">' + esc(p.designation || '') + '</div></td><td class="num">' + s.open + ' open</td><td class="num' + (s.overdue ? ' bad' : '') + '">' + s.overdue + ' overdue</td><td class="num">' + s.verified + ' verified</td></tr>'; }).join('') + '</tbody></table>') +
+        '<button class="btn secondary" data-review-team="' + esc(teamId) + '">Open weekly review</button></div></div>';
+    } else if (fn) {
+      var teams = st.data.teams.filter(function (t) { return t.active !== 'false' && Insights.functionOfTeam(st.S, t.id) === fn; });
+      var fids = Insights.scopePeople(st.S, 'function', fn, ent);
+      html += statLine(scopeStats(fids)) + '<div class="grid2"><div class="stack">' + summaryCard({ scopeType: 'function', scopeId: fn, type: 'weekly', entity: ent, title: 'This week in ' + fn }) + '</div><div class="stack">' +
+        card('Teams', teams.length, teams.length ? '<table><thead><tr><th>Team</th><th>Lead</th><th class="num">People</th><th class="num">Overdue</th><th class="num">Help</th><th class="num">Verified (7d)</th></tr></thead><tbody>' + teams.map(function (t) {
+          var tids = Core.teamMemberIds(st.S, t.id).filter(function (id) { var p = Core.person(st.S, id); return p && (!ent || p.entity === ent); });
+          var ss = scopeStats(tids);
+          return '<tr class="click" data-org-team="' + esc(t.id) + '"><td>' + esc(t.name) + '<div class="meta">' + esc(t.entity) + (t.type !== 'home' ? ' · ' + esc(Core.TEAM_TYPES[t.type]) : '') + '</div></td><td>' + esc(nm(t.leadId)) + '</td><td class="num">' + ss.people + '</td><td class="num' + (ss.overdue ? ' bad' : '') + '">' + ss.overdue + '</td><td class="num' + (ss.help ? ' bad' : '') + '">' + ss.help + '</td><td class="num">' + ss.verified7 + '</td></tr>';
+        }).join('') + '</tbody></table>' : '<p class="empty">No teams in this function yet. Set a team\'s function on People & teams.</p>') + '</div></div>';
+    } else {
+      var o = scopeStats(Insights.scopePeople(st.S, 'org', '', ent));
+      html += statLine(o) + '<div class="fn-grid">' + fns.map(function (f) {
+        var s = scopeStats(Insights.scopePeople(st.S, 'function', f, ent));
+        var nTeams = st.data.teams.filter(function (t) { return t.active !== 'false' && Insights.functionOfTeam(st.S, t.id) === f; }).length;
+        if (!s.people && !nTeams) return '';
+        var pressure = s.help * 2 + s.overdue;
+        return '<button class="card fn-card' + (pressure ? ' hot' : '') + '" data-org-fn="' + esc(f) + '"><div class="fn-name">' + esc(f) + '</div><div class="meta">' + s.people + ' people · ' + st.data.teams.filter(function (t) { return t.active !== 'false' && Insights.functionOfTeam(st.S, t.id) === f; }).length + ' teams</div>' +
+          '<div class="fn-nums"><span><b>' + s.verified7 + '</b>verified</span><span class="' + (s.overdue ? 'bad' : '') + '"><b>' + s.overdue + '</b>overdue</span><span class="' + (s.help ? 'bad' : '') + '"><b>' + s.help + '</b>help</span><span><b>' + (s.duty === null ? '—' : s.duty + '%') + '</b>duties</span></div></button>';
+      }).join('') + '</div>' +
+        '<div class="grid2" style="margin-top:20px"><div class="stack">' + summaryCard({ scopeType: 'org', scopeId: '', type: 'weekly', entity: ent, title: 'This week across the institute' }) + '</div><div class="stack">' +
+        card('Needs attention now', null, Core.signals(st.S, st.meId, st.today).filter(function (sg) { if (!ent || !sg.personId) return true; var p = Core.person(st.S, sg.personId); return p && p.entity === ent; }).slice(0, 6).map(function (sg) { return '<div class="item"><span class="pill sev' + sg.sev + '">' + esc(sg.type) + '</span> ' + esc(sg.title) + '<div class="meta">' + (sg.personId && sg.itemId ? esc(nm(sg.personId)) + ' · ' : '') + esc(sg.detail || '') + '</div></div>'; }).join('') + '<p style="margin:10px 0 0"><a href="#help">All of it on Needs help</a></p>') + '</div></div>';
+    }
+    el.innerHTML = html;
+    $$('[data-ent]').forEach(function (b) { b.onclick = function () { st.sub.ent = b.dataset.ent; render(); }; });
+    $$('[data-org-fn]').forEach(function (b) { b.onclick = function () { st.sub.orgFn = b.dataset.orgFn; st.sub.orgTeam = ''; render(); }; });
+    $$('[data-org-team]').forEach(function (b) { b.onclick = function () { st.sub.orgTeam = b.dataset.orgTeam; render(); }; });
+    $$('[data-crumb]').forEach(function (a) { a.onclick = function (e) { e.preventDefault(); if (a.dataset.crumb === 'fn') st.sub.orgTeam = ''; else { st.sub.orgFn = ''; st.sub.orgTeam = ''; } render(); }; });
+    $$('[data-review-team]').forEach(function (b) { b.onclick = function () { st.sub.reviewTeam = b.dataset.reviewTeam; location.hash = 'review'; }; });
+  }
+
+  // ---------------- Reports
+  function pageReports(el) {
+    var r = st.sub.rep || (st.sub.rep = { scopeType: isOwner() ? 'org' : 'person', scopeId: isOwner() ? '' : st.meId, period: 'month', entity: '' });
+    var choices = {
+      org: isOwner() ? [['', 'Whole institute']] : [],
+      'function': myFunctions().map(function (f) { return [f, f]; }),
+      team: st.data.teams.filter(function (t) { return Insights.canSee(st.S, st.meId, 'team', t.id, st.today); }).map(function (t) { return [t.id, t.name]; }),
+      person: activePeople().filter(function (p) { return Insights.canSee(st.S, st.meId, 'person', p.id, st.today); }).map(function (p) { return [p.id, p.name]; }),
+      initiative: st.data.initiatives.filter(function (i) { return Insights.canSee(st.S, st.meId, 'initiative', i.id, st.today); }).map(function (i) { return [i.id, i.title]; })
+    };
+    var types = Object.keys(choices).filter(function (k) { return choices[k].length; });
+    if (types.indexOf(r.scopeType) < 0) { r.scopeType = types[0]; r.scopeId = choices[r.scopeType][0][0]; }
+    if (!choices[r.scopeType].some(function (c) { return c[0] === r.scopeId; })) r.scopeId = choices[r.scopeType][0][0];
+    var range = Insights.periodRange(st.S, r.period, st.today, r.custom);
+    var f = Insights.facts(st.S, r.scopeType, r.scopeId, range, r.entity, st.today);
+    var t = f.totals;
+    var sumType = r.scopeType === 'person' && r.period === 'term' ? 'term' : r.scopeType === 'initiative' ? 'initiative' : 'custom';
+    var tbl = function (rows, cols) { return rows.length ? '<table><thead><tr>' + cols.map(function (c) { return '<th' + (c[2] ? ' class="num"' : '') + '>' + esc(c[1]) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function (x) { return '<tr>' + cols.map(function (c) { return '<td' + (c[2] ? ' class="num"' : '') + '>' + esc(x[c[0]] === null || x[c[0]] === undefined ? '—' : x[c[0]]) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table>' : '<p class="empty">Nothing in this period.</p>'; };
+    el.innerHTML = '<div class="page-head noprint"><div><h1>Reports</h1><p class="lede">Any part of the institute, any period. Print it or download the items as a spreadsheet.</p></div><div class="actions"><button class="btn secondary" id="r-print">Print</button><button class="btn secondary" id="r-csv">Download CSV</button></div></div>' +
+      '<div class="card noprint" style="margin-bottom:20px"><div class="row"><div><label>Report on</label><select id="r-type">' + opts(types.map(function (k) { return [k, Insights.SCOPES[k]]; }), r.scopeType) + '</select></div><div><label>Which</label><select id="r-id">' + opts(choices[r.scopeType], r.scopeId) + '</select></div>' +
+      '<div><label>Period</label><select id="r-period">' + opts([['week', 'Last 7 days'], ['month', 'Last 30 days'], ['term', 'This term'], ['custom', 'Custom dates']], r.period) + '</select></div>' +
+      (Insights.entities(st.S).length > 1 && (r.scopeType === 'org' || r.scopeType === 'function') ? '<div><label>Entity</label><select id="r-ent">' + opts([['', 'Both']].concat(Insights.entities(st.S).map(function (x) { return [x, x]; })), r.entity) + '</select></div>' : '') + '</div>' +
+      (r.period === 'custom' ? '<div class="row"><div><label>From</label><input type="date" id="r-from" value="' + esc((r.custom || {}).from || range.from) + '"></div><div><label>To</label><input type="date" id="r-to" value="' + esc((r.custom || {}).to || range.to) + '"></div></div>' : '') + '</div>' +
+      '<div class="print-title"><h1>' + esc(f.scope.name) + '</h1><p class="meta">' + esc(f.period.label) + ' · ' + esc(f.scope.entity) + ' · printed ' + esc(fmtDate(st.today)) + '</p></div>' +
+      '<div class="kpis">' + [[t.verified, 'Verified'], [t.contributions, 'Contributions'], [t.openNow, 'Open now'], [t.overdue, 'Overdue', t.overdue], [t.helpOpen, 'Waiting for help', t.helpOpen], [t.dutyOnTimePct === null ? '—' : t.dutyOnTimePct + '%', 'SOP duties on time'], [t.avgHelpResponseWorkingHours === null ? '—' : t.avgHelpResponseWorkingHours + 'h', 'Avg. help response']].map(function (k) { return '<div class="card kpi' + (k[2] ? ' warn' : '') + '"><div class="n">' + esc(k[0]) + '</div><div class="l">' + esc(k[1]) + '</div></div>'; }).join('') + '</div>' +
+      '<div class="grid2"><div class="stack">' + summaryCard({ scopeType: r.scopeType, scopeId: r.scopeId, type: sumType, period: r.period, entity: r.entity, title: 'Summary' }) +
+      card('Went well', f.highlights.length, tbl(f.highlights, [['who', 'Who'], ['what', 'What'], ['initiative', 'Initiative'], ['time', 'Time']])) +
+      card('Needs attention', f.needsAttention.length, tbl(f.needsAttention, [['who', 'Who'], ['what', 'What'], ['daysLate', 'Days late', 1]])) + '</div><div class="stack">' +
+      (f.byFunction ? card('By function', f.byFunction.length, tbl(f.byFunction, [['function', 'Function'], ['people', 'People', 1], ['verified', 'Verified', 1], ['overdue', 'Overdue', 1], ['helpOpen', 'Help', 1]])) : '') +
+      (f.byTeam ? card('By team', f.byTeam.length, tbl(f.byTeam, [['team', 'Team'], ['lead', 'Lead'], ['people', 'People', 1], ['verified', 'Verified', 1], ['overdue', 'Overdue', 1], ['helpOpen', 'Help', 1]])) : '') +
+      (f.initiatives ? card('Initiatives', f.initiatives.length, tbl(f.initiatives, [['initiative', 'Initiative'], ['items', 'Items', 1], ['verified', 'Verified', 1], ['open', 'Open', 1], ['lastDecision', 'Last decision']])) : '') +
+      (r.scopeType !== 'person' ? card('Most verified work', f.topContributors.length, tbl(f.topContributors, [['name', 'Name'], ['verified', 'Verified', 1], ['contributions', 'Contributions', 1], ['hours', 'Approx. hours', 1]])) : '') +
+      card('Help requests open', f.helpRequests.length, tbl(f.helpRequests, [['who', 'Who'], ['need', 'Need'], ['waitingWorkingHours', 'Waiting (h)', 1]])) + '</div></div>';
+    var upd = function (k, v) { r[k] = v; render(); };
+    $('#r-type').onchange = function (e) { r.scopeType = e.target.value; r.scopeId = choices[r.scopeType][0][0]; render(); };
+    $('#r-id').onchange = function (e) { upd('scopeId', e.target.value); };
+    $('#r-period').onchange = function (e) { upd('period', e.target.value); };
+    if ($('#r-ent')) $('#r-ent').onchange = function (e) { upd('entity', e.target.value); };
+    if ($('#r-from')) $('#r-from').onchange = $('#r-to').onchange = function () { r.custom = { from: $('#r-from').value, to: $('#r-to').value }; render(); };
+    $('#r-print').onclick = function () { try { window.print(); } catch (e) { toast('Printing is not allowed here; open the site directly'); } };
+    $('#r-csv').onclick = function () {
+      var ids = {}; Insights.scopePeople(st.S, r.scopeType, r.scopeId, r.entity).forEach(function (x) { ids[x] = true; });
+      var rows = st.data.items.filter(function (it) { return (r.scopeType === 'initiative' ? it.initiativeId === r.scopeId : ids[it.assigneeId]) && String(it.updatedAt).slice(0, 10) >= range.from && String(it.updatedAt).slice(0, 10) <= range.to; });
+      var cols = ['title', 'kind', 'status', 'assignee', 'team', 'function', 'initiative', 'due', 'band', 'evidence', 'verifiedBy', 'verifiedAt', 'createdBy', 'createdAt'];
+      var q = function (v) { v = String(v === undefined ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+      var csv = [cols.join(',')].concat(rows.map(function (it) { var p = Core.person(st.S, it.assigneeId) || {}; return [it.title, Core.KINDS[it.kind], Core.STATUS[it.status], p.name || '', teamName(p.homeTeamId), Insights.functionOfPerson(st.S, it.assigneeId), iniName(it.initiativeId), it.due, Core.BAND_LABELS[it.band] || '', it.evidence, nm(it.verifiedBy), it.verifiedAt, nm(it.createdBy), it.createdAt].map(q).join(','); })).join('\n');
+      try {
+        var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' })); a.download = 'report-' + st.today + '.csv'; document.body.appendChild(a); a.click(); a.remove();
+      } catch (e) { toast('Downloads are not allowed here; open the site directly'); }
+    };
+  }
+
+  // ---------------- Weekly team review
+  function reviewTeams() { return isOwner() ? st.data.teams.filter(function (t) { return t.active !== 'false'; }) : myLedTeams(); }
+  function pageReview(el) {
+    var teams = reviewTeams();
+    var t = teams.filter(function (x) { return x.id === st.sub.reviewTeam; })[0] || teams[0];
+    if (!t) { el.innerHTML = '<div class="card"><p class="empty">You do not lead a team.</p></div>'; return; }
+    var ag = Insights.reviewAgenda(st.S, t.id, st.today);
+    var past = (st.data.reviews || []).filter(function (r) { return r.teamId === t.id; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+    var members = Core.teamMemberIds(st.S, t.id).map(function (id) { return Core.person(st.S, id); }).filter(Boolean);
+    var row = function (n) { return '<div class="row" style="margin-top:6px"><select name="c' + n + 'p" style="flex:1.4">' + personOptions(members, '', 'Who…') + '</select><input name="c' + n + 't" placeholder="Commitment for this week" style="flex:3"><input type="date" name="c' + n + 'd" style="flex:1.2"></div>'; };
+    el.innerHTML = '<div class="page-head"><div><h1>Weekly review</h1><p class="lede">A 20-minute agenda built from the tracker. Go through it top to bottom, then record each person\'s commitment.</p></div><select id="rv-team" style="max-width:320px">' + teamOptions(teams, t.id) + '</select></div>' +
+      '<div class="grid2"><div class="stack">' +
+      card('1. Last week\'s commitments', ag.lastCommitments.length, ag.lastReview ? '<p class="meta">Review on ' + esc(fmtDate(ag.lastReview.date)) + (ag.lastReview.notes ? ': ' + esc(ag.lastReview.notes) : '') + '</p>' + list(ag.lastCommitments, 'None recorded.', { noButtons: true }) : '<p class="empty">This is the first review.</p>') +
+      card('2. Help requests', ag.help.length, list(ag.help, 'Nobody is waiting for help.')) +
+      card('3. Overdue', ag.overdue.length, list(ag.overdue, 'Nothing overdue.', { noButtons: true })) +
+      card('4. Disputed items', ag.disputes.length, list(ag.disputes, 'No disputes.')) +
+      card('5. Due in the next 7 days', ag.dueNextWeek.length, list(ag.dueNextWeek, 'Nothing due.', { noButtons: true })) +
+      '</div><div class="stack">' +
+      card('6. Wins this week', ag.wins.length, list(ag.wins, 'Nothing verified this week yet.', { noButtons: true, showThanks: true })) +
+      card('Load by person', ag.members.length, '<table><tbody>' + ag.members.map(function (m) { return '<tr><td>' + esc(nm(m.personId)) + '</td><td class="num">' + m.open + ' open</td><td class="num' + (m.overdue ? ' bad' : '') + '">' + m.overdue + ' overdue</td></tr>'; }).join('') + '</tbody></table>') +
+      '<form class="card" id="rv-form"><h2>7. Record this review</h2><label>Notes <span class="hint">decisions and anything to follow up</span></label><textarea name="notes"></textarea><label>Commitments <span class="hint">each becomes a follow-up item for that person</span></label>' + row(1) + row(2) + row(3) + row(4) + row(5) +
+      '<div class="err" id="rv-err"></div><div class="foot"><button class="btn">Save review</button></div></form>' +
+      summaryCard({ scopeType: 'team', scopeId: t.id, type: 'weekly', title: 'Summary of the week' }) +
+      card('Past reviews', past.length, past.length ? past.slice(0, 8).map(function (r) { return '<div class="item"><b>' + esc(fmtDate(r.date)) + '</b> · ' + esc(nm(r.heldBy)) + ' · ' + Core.list(r.commitments).length + ' commitment(s)<div class="meta">' + esc(r.notes) + '</div></div>'; }).join('') : '<p class="empty">None yet.</p>') +
+      '</div></div>';
+    $('#rv-team').onchange = function (e) { st.sub.reviewTeam = e.target.value; render(); };
+    $('#rv-form').onsubmit = function (e) {
+      e.preventDefault();
+      var f = e.target.elements, cs = [];
+      for (var n = 1; n <= 5; n++) if (f['c' + n + 't'].value.trim()) cs.push({ personId: f['c' + n + 'p'].value, title: f['c' + n + 't'].value.trim(), due: f['c' + n + 'd'].value });
+      if (cs.some(function (c) { return !c.personId; })) { $('#rv-err').textContent = 'Choose who each commitment is for'; return; }
+      doAct('saveReview', { teamId: t.id, notes: f.notes.value.trim(), commitments: cs }, 'Review saved' + (cs.length ? ', ' + cs.length + ' commitment(s) sent' : '')).catch(function (er) { $('#rv-err').textContent = er.message; });
+    };
+  }
+
+  // ---------------- Recognition wall
+  function pageWall(el) {
+    var fn = st.sub.wallFn || '';
+    var rows = Insights.recognition(st.S, st.data.items, Core.addDays(st.today, -30)).filter(function (it) { return !fn || Insights.functionOfPerson(st.S, it.assigneeId) === fn; });
+    var fns = Insights.functions(st.S);
+    el.innerHTML = '<div class="page-head"><div><h1>Recognition</h1><p class="lede">Verified contributions beyond regular duties, and thank-yous, from the last 30 days.</p></div></div>' +
+      '<div class="sub-tabs">' + [['', 'Everyone']].concat(fns.map(function (f) { return [f, f]; })).map(function (f) { return '<button data-wfn="' + esc(f[0]) + '" class="' + (f[0] === fn ? 'on' : '') + '">' + esc(f[1]) + '</button>'; }).join('') + '</div>' +
+      (rows.length ? '<div class="wall">' + rows.map(function (it) {
+        var p = Core.person(st.S, it.assigneeId) || {};
+        return '<div class="card wall-card"><div class="meta">' + esc(Insights.functionOfPerson(st.S, it.assigneeId)) + ' · ' + esc(fmtDate(it.verifiedAt)) + '</div><div class="wall-name">' + esc(p.name || '') + '</div><div>' + esc(it.title) + '</div>' + (it.initiativeId ? '<div class="meta">' + esc(iniName(it.initiativeId)) + '</div>' : '') + (it.thanks ? '<div class="note teal">' + esc(it.thanks).replace(/\n/g, '<br>') + '</div>' : '') + '</div>';
+      }).join('') + '</div>' : '<div class="card"><p class="empty">Nothing here yet. Verified contributions and thank-yous appear here.</p></div>');
+    $$('[data-wfn]').forEach(function (b) { b.onclick = function () { st.sub.wallFn = b.dataset.wfn; render(); }; });
   }
 
   // ---------------- Workload
@@ -502,7 +673,7 @@
           inis.map(function (i) {
             var s = stats[i.id] || {}, last = st.data.decisions.filter(function (d) { return d.initiativeId === i.id; }).sort(function (a, b) { return a.at < b.at ? 1 : -1; })[0];
             return '<tr><td>' + esc(i.title) + (i.status === 'stopped' ? ' <span class="pill">Stopped</span>' : '') + '<div class="meta">' + esc(i.goal) + '</div></td><td>' + esc(nm(i.ownerId)) + '</td><td class="num">' + (s.items || 0) + '</td><td class="num">' + (s.verified || 0) + '</td><td class="num">' + (s.effort || 0) + '</td><td class="meta">' + esc((s.teams || []).map(teamName).join(', ')) + '</td><td class="meta">' + esc(fmtDate(s.last)) + '</td><td>' + (last ? '<b>' + esc(last.decision) + '</b><div class="meta">' + esc(fmtDate(last.at)) + '</div>' : '<span class="meta">None yet</span>') + '</td>' +
-              (owner ? '<td><button class="btn sm secondary" data-decide="' + esc(i.id) + '">Decide</button> <button class="btn sm secondary" data-edit-ini="' + esc(i.id) + '">Edit</button></td>' : '') + '</tr>';
+              (owner ? '<td style="white-space:nowrap"><button class="btn sm secondary" data-report-ini="' + esc(i.id) + '">Report</button> <button class="btn sm secondary" data-decide="' + esc(i.id) + '">Decide</button> <button class="btn sm secondary" data-edit-ini="' + esc(i.id) + '">Edit</button></td>' : '') + '</tr>';
           }).join('') + '</tbody></table></div>' : '<p class="empty">No initiatives under this priority yet.</p>') + '</div>';
     });
     var log = st.data.decisions.slice().sort(function (a, b) { return a.at < b.at ? 1 : -1; });
@@ -512,6 +683,7 @@
       $('#b-pr').onclick = function () { priorityModal(); };
       $('#b-in').onclick = function () { initiativeModal(); };
       $$('[data-decide]').forEach(function (b) { b.onclick = function () { decisionModal(b.dataset.decide); }; });
+      $$('[data-report-ini]').forEach(function (b) { b.onclick = function () { st.sub.rep = { scopeType: 'initiative', scopeId: b.dataset.reportIni, period: 'term', entity: '' }; location.hash = 'reports'; }; });
       $$('[data-edit-ini]').forEach(function (b) { b.onclick = function () { initiativeModal(st.data.initiatives.filter(function (i) { return i.id === b.dataset.editIni; })[0]); }; });
     }
   }
@@ -573,8 +745,8 @@
           return '<tr class="click" data-person="' + esc(p.id) + '" data-q="' + esc((p.name + ' ' + p.designation).toLowerCase()) + '"><td class="meta">' + esc(p.id) + '</td><td>' + esc(p.name) + '<div class="meta">' + esc(p.designation) + '</div></td><td class="meta">' + esc(Core.LEVELS[+p.level] || '') + '</td><td>' + esc(teamName(p.homeTeamId)) + '</td><td>' + esc(p.managerId ? nm(p.managerId) : '') + '</td><td>' + esc(p.verifierId ? nm(p.verifierId) : '') + '</td><td class="meta">' + esc(p.roles) + '</td><td>' + (p.phone ? '✓' : '<span class="bad">—</span>') + '</td>' + (st.data.demo ? '' : '<td>' + (p.hasLogin === 'true' ? '✓' : '<span class="meta">none</span>') + '</td>') + '</tr>';
         }).join('') + '</tbody></table></div>';
     } else if (tab === 'teams') {
-      html += '<div class="card scroll"><table><thead><tr><th>Team</th><th>Type</th><th>Entity</th><th>Lead</th><th>Deputy</th><th>Team Admin</th><th class="num">Members</th><th>Ends</th></tr></thead><tbody>' +
-        st.data.teams.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).map(function (t) { return '<tr class="click" data-team-edit="' + esc(t.id) + '"><td>' + esc(t.name) + (t.active === 'false' ? ' <span class="pill">Archived</span>' : '') + '</td><td>' + esc(Core.TEAM_TYPES[t.type] || t.type) + '</td><td>' + esc(t.entity) + '</td><td>' + (t.leadId ? esc(nm(t.leadId)) : '<span class="bad">None</span>') + '</td><td>' + esc(t.deputyId ? nm(t.deputyId) : '') + '</td><td>' + esc(Core.list(t.adminIds).map(nm).join(', ')) + '</td><td class="num">' + Core.teamMemberIds(st.S, t.id).length + '</td><td class="meta">' + esc(fmtDate(t.endDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      html += '<div class="card scroll"><table><thead><tr><th>Team</th><th>Function</th><th>Type</th><th>Entity</th><th>Lead</th><th>Deputy</th><th>Team Admin</th><th class="num">Members</th><th>Ends</th></tr></thead><tbody>' +
+        st.data.teams.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).map(function (t) { return '<tr class="click" data-team-edit="' + esc(t.id) + '"><td>' + esc(t.name) + (t.active === 'false' ? ' <span class="pill">Archived</span>' : '') + '</td><td>' + (t['function'] ? esc(t['function']) : '<span class="bad">Not set</span>') + '</td><td>' + esc(Core.TEAM_TYPES[t.type] || t.type) + '</td><td>' + esc(t.entity) + '</td><td>' + (t.leadId ? esc(nm(t.leadId)) : '<span class="bad">None</span>') + '</td><td>' + esc(t.deputyId ? nm(t.deputyId) : '') + '</td><td>' + esc(Core.list(t.adminIds).map(nm).join(', ')) + '</td><td class="num">' + Core.teamMemberIds(st.S, t.id).length + '</td><td class="meta">' + esc(fmtDate(t.endDate)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
     } else if (tab === 'issues') {
       var issues = Core.structureIssues(st.S, st.today);
       var kinds = {};
@@ -610,7 +782,8 @@
       '<table><tbody>' + [['Home team', teamName(p.homeTeamId)], ['Other teams', memberOf.join(', ')], ['Line manager', nm(p.managerId)], ['Verified by', nm(Core.verifierOf(st.S, id, st.today))], ['Help goes to', chain.map(nm).join(' → ')], ['Verifies', Core.spanOf(st.S, id, st.today) + ' people']]
         .filter(function (r) { return r[1] && r[1] !== '—'; }).map(function (r) { return '<tr><td class="meta" style="width:120px">' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>'; }).join('') + '</tbody></table>' +
       '<div class="kpis" style="margin-top:14px"><div class="card kpi"><div class="n">' + s.open + '</div><div class="l">Open</div></div><div class="card kpi' + (s.overdue ? ' warn' : '') + '"><div class="n">' + s.overdue + '</div><div class="l">Overdue</div></div><div class="card kpi"><div class="n">' + s.verified + '</div><div class="l">Verified</div></div><div class="card kpi"><div class="n">' + s.contributions + '</div><div class="l">Contributions</div></div></div>' +
-      '<h2 style="font-size:14px">Open</h2>' + list(open, 'Nothing open.', { showWho: false }) + '<h2 style="font-size:14px;margin-top:14px">Recently verified</h2>' + list(recent, 'Nothing yet.', { showWho: false, showThanks: true, noButtons: true }) +
+      summaryCard({ scopeType: 'person', scopeId: id, type: 'term', period: 'term', title: 'Term summary' }) +
+      '<h2 style="font-size:14px;margin-top:14px">Open</h2>' + list(open, 'Nothing open.', { showWho: false }) + '<h2 style="font-size:14px;margin-top:14px">Recently verified</h2>' + list(recent, 'Nothing yet.', { showWho: false, showThanks: true, noButtons: true }) +
       '<div class="foot">' + (canEdit ? '<button class="btn secondary" id="pm-edit">Edit</button>' : '') + (Core.scopeIds(st.S, st.meId, st.today)[id] && id !== st.meId ? '<button class="btn secondary" id="pm-assign">Assign work</button>' : '') + '<button class="btn secondary" data-close>Close</button></div>', { wide: true });
     $('[data-close]', m).onclick = closeModal;
     if ($('#pm-edit')) $('#pm-edit').onclick = function () { personEditModal(p); };
@@ -655,7 +828,7 @@
     var homeCount = t.id ? st.data.people.filter(function (p) { return p.homeTeamId === t.id && p.status !== 'left'; }).length : 0;
     var m = formModal(t.id ? 'Edit team' : 'Add a team', t.id ? homeCount + ' people have this as their home team.' : '',
       '<div class="row"><div><label>Name</label><input name="name" value="' + esc(t.name || '') + '"></div><div><label>Type</label><select name="type">' + opts(Object.keys(Core.TEAM_TYPES).map(function (k) { return [k, Core.TEAM_TYPES[k]]; }), t.type || 'home') + '</select></div></div>' +
-      '<div class="row"><div><label>Entity</label><input name="entity" value="' + esc(t.entity || '') + '"></div><div><label>Ends on <span class="hint">projects</span></label><input type="date" name="endDate" value="' + esc(t.endDate || '') + '"></div></div>' +
+      '<div class="row"><div><label>Entity</label><input name="entity" value="' + esc(t.entity || '') + '"></div><div><label>Function</label><select name="function">' + opts([['', 'Choose…']].concat(Insights.functions(st.S).map(function (f) { return [f, f]; })), t['function'] || '') + '</select></div><div><label>Ends on <span class="hint">projects</span></label><input type="date" name="endDate" value="' + esc(t.endDate || '') + '"></div></div>' +
       '<div class="row"><div><label>Lead</label><select name="leadId">' + personOptions(ppl, t.leadId, 'Choose…') + '</select></div><div><label>Deputy</label><select name="deputyId">' + personOptions(ppl, t.deputyId, 'None') + '</select></div></div>' +
       '<label>Team Admins <span class="hint">people who enter work for the team; hold Ctrl or Cmd for several</span></label><select name="adminIds" multiple size="4">' + personOptions(ppl, '') + '</select>' +
       '<label>Initiative <span class="hint">for project teams</span></label><select name="initiativeId">' + initiativeOptions(t.initiativeId) + '</select>' +
@@ -715,13 +888,17 @@
       '<div class="row">' + f('neglectDays', 'Neglected priority after', 'days') + f('digestHour', 'Digest hour', '0–23') + f('quietStart', 'Quiet from', 'hour') + f('quietEnd', 'Quiet until', 'hour') + '</div>' +
       '<div class="row">' + f('workStart', 'Working day starts', 'hour') + f('workEnd', 'Working day ends', 'hour') + f('weekend', 'Weekend days', '0=Sun … 6=Sat, comma-separated') + '</div>' +
       '<div class="row">' + f('holidays', 'Holidays', 'YYYY-MM-DD, comma-separated') + '</div>' +
+      '<div class="row">' + f('termStart', 'Term starts', 'YYYY-MM-DD, used for term summaries') + '</div>' +
+      '<div class="row">' + f('functions', 'Functions', 'separated by |') + '</div>' +
       '<div class="err" id="set-err"></div><div class="foot"><button class="btn">Save settings</button></div></form>' +
-      '<div class="stack"><div class="card"><h2>Messages</h2><p class="meta">' + (st.data.demo ? 'Demo mode: messages are queued here and never sent.' : (st.data.sendMode === 'live' ? 'Live: messages go to staff.' : 'Test mode: messages go only to the test phone set in Script Properties.') + (st.data.whatsapp ? ' WhatsApp is connected.' : ' WhatsApp is not connected yet.')) + '</p><div id="outbox">Loading…</div></div></div></div>';
+      '<div class="stack"><div class="card"><h2>AI summaries</h2><p class="meta">' + (st.data.demo ? 'Demo mode: summaries are written from a template, no AI.' : (st.data.ai && st.data.ai.connected ? 'Connected: ' + esc(st.data.ai.provider) + ' (' + esc(st.data.ai.model) + '). Only facts from the tracker are sent: names, item titles and counts.' : 'Not connected. Summaries are written from a template using the same facts. To connect, set AI_PROVIDER and AI_API_KEY in the Apps Script properties.')) + '</p>' +
+      (isOwner() ? '<div class="btns" style="margin-top:10px"><button class="btn sm secondary" id="b-term">Write term summaries for everyone</button></div>' : '') + '</div><div class="card"><h2>Messages</h2><p class="meta">' + (st.data.demo ? 'Demo mode: messages are queued here and never sent.' : (st.data.sendMode === 'live' ? 'Live: messages go to staff.' : 'Test mode: messages go only to the test phone set in Script Properties.') + (st.data.whatsapp ? ' WhatsApp is connected.' : ' WhatsApp is not connected yet.')) + '</p><div id="outbox">Loading…</div></div></div></div>';
     $('#set-form').onsubmit = function (e) {
       e.preventDefault();
       var v = {}; $$('#set-form [name]').forEach(function (i) { v[i.name] = i.value.trim(); });
       doAct('saveSettings', v, 'Settings saved').catch(function (er) { $('#set-err').textContent = er.message; });
     };
+    if ($('#b-term')) $('#b-term').onclick = function () { API.queueTermSummaries().then(function (r) { toast(r.queued + ' people queued. ' + r.note); return load(); }).catch(handleErr); };
     $('#b-jobs').onclick = function () { API.runJobs().then(function (r) { toast('Done: ' + (r.duties || 0) + ' duties, ' + ((r.helpEsc || 0) + (r.overdueEsc || 0)) + ' escalations'); return load(); }).catch(handleErr); };
     API.outbox().then(function (rows) {
       $('#outbox').innerHTML = rows.length ? rows.slice(0, 40).map(function (m) { return '<div class="item"><b>To ' + esc(nm(m.toId)) + '</b> <span class="pill">' + esc(m.kind) + '</span><div class="meta" style="white-space:pre-wrap">' + esc(m.text) + '</div><div class="meta">' + esc(fmtWhen(m.at)) + ' · ' + (m.sentAt ? 'sent ' + esc(fmtWhen(m.sentAt)) : m.error ? '<span class="bad">' + esc(m.error) + '</span>' : 'waiting') + '</div></div>'; }).join('') : '<p class="empty">No messages yet.</p>';

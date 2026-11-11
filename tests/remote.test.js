@@ -7,6 +7,7 @@ const props = { ADMIN_NAME: 'Test Admin', ADMIN_PASSWORD: 'firstpass123', TEST_P
 const g = { Date, Math, JSON, String, Number, Object, Array, Error, RegExp, encodeURIComponent, isNaN, Buffer };
 vm.createContext(g); const ss = install(g, props);
 vm.runInContext(fs.readFileSync(root + '/assets/core.js', 'utf8'), g);
+vm.runInContext(fs.readFileSync(root + '/assets/insights.js', 'utf8'), g);
 vm.runInContext(fs.readFileSync(root + '/apps-script/Code.gs', 'utf8'), g);
 g.setup();
 ss.getSheetByName('Roster').getRange(2, 1, 3, 6).setValues([['Head One', 'T5', 'Principal', 'CFAL', 'Test Admin', '9111111111'], ['Lead Two', 'T4', 'Senior Lecturer, Physics', 'CFAL', 'Head One', '9222222222'], ['Staff Three', 'T3', 'Lecturer, Physics', 'CFAL', 'Lead Two', '9333333333']]);
@@ -48,5 +49,13 @@ let n = 0; const ok = (c, m) => { if (!c) throw new Error('FAILED ' + m); n++; }
   ok(!$('a[href="#people"]'), 'staff has no admin pages');
   click([...$$('[data-act="confirm"]')][0]); await sleep(150);
   ok($$('[data-act="complete"]').length > 0, 'confirmed via backend');
+  // AI summary through the real backend (fake Gemini)
+  click($('#signout')); await sleep(120);
+  $('[name=ident]').value = adminId; $('[name=password]').value = 'new-secret-99'; submit($('#si')); await sleep(150);
+  props.AI_PROVIDER = 'gemini'; props.AI_API_KEY = 'k';
+  w.location.hash = 'org'; w.dispatchEvent(new w.HashChangeEvent('hashchange')); await sleep(100);
+  ok($$('[data-org-fn]').length > 0, 'org functions from roster import');
+  click($('[data-sum]')); await sleep(300);
+  ok($('.sumtext') && /AI SUMMARY/.test($('.sumtext').textContent) && /Written by AI/.test(d.body.textContent), 'AI summary shown and labelled');
   console.log(n + ' remote checks passed'); if (errors.length) { console.log(errors); process.exit(1); } process.exit(0);
 })().catch(e => { console.error(e.message, errors); process.exit(1); });

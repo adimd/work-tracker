@@ -58,3 +58,38 @@ t('structure issues', () => { const i = Core.structureIssues(S, today); assert(A
 t('stats', () => { const o = Core.orgStats(S, S.all('items'), today); assert('open' in o); const ts = Core.teamStats(S, 'tm_phy', S.all('items'), today); assert(ts.length >= 3); Core.initiativeStats(S, S.all('items')); });
 t('settings', () => { Core.act(S, 'P001', 'saveSettings', { spanLimit: '12' }, now); assert.equal(Core.settings(S).spanLimit, '12'); });
 console.log(pass + ' passed', S.all('outbox').length + ' messages queued');
+// ---- insights
+global.Insights = require('../assets/insights.js');
+(() => {
+  const S2 = new MemoryStore(DemoData.build(today));
+  const r = Insights.periodRange(S2, 'week', today);
+  const f = Insights.facts(S2, 'org', '', r, '', today);
+  t('org facts', () => { assert(f.totals.verified > 0); assert(f.byFunction.length >= 4); assert(f.byTeam.length > 5); });
+  t('function facts', () => { const ff = Insights.facts(S2, 'function', 'Operations', r, '', today); assert.equal(ff.scope.people, 4); assert(ff.highlights.some(h => /tube lights/.test(h.what))); });
+  t('entity filter', () => { const a = Insights.facts(S2, 'org', '', r, 'School', today); assert(a.scope.people < f.scope.people); });
+  t('person facts', () => { const pf = Insights.facts(S2, 'person', 'P009', Insights.periodRange(S2, 'term', today), '', today); assert(pf.person.name === 'Latha Nayak'); });
+  t('template text', () => { const x = Insights.templateText(f); assert(/verified/.test(x)); assert(!/undefined|NaN/.test(x), x); });
+  t('template for every scope', () => { [['function', 'Academics'], ['team', 'tm_phy'], ['person', 'P022'], ['initiative', 'in_fete']].forEach(([a, b]) => { const x = Insights.templateText(Insights.facts(S2, a, b, Insights.periodRange(S2, 'term', today), '', today)); assert(!/undefined|NaN/.test(x), a + ': ' + x); }); });
+  t('prompt has facts only', () => { const p = Insights.prompt('weekly', f); assert(/ONLY the facts/.test(p.system)); assert(p.user.indexOf('"verified"') > 0); });
+  t('canSee', () => {
+    assert(Insights.canSee(S2, 'P001', 'org', '', today));
+    assert(!Insights.canSee(S2, 'P009', 'org', '', today));
+    assert(Insights.canSee(S2, 'P009', 'person', 'P009', today));
+    assert(!Insights.canSee(S2, 'P009', 'person', 'P010', today));
+    assert(Insights.canSee(S2, 'P008', 'person', 'P009', today));
+    assert(Insights.canSee(S2, 'P008', 'team', 'tm_phy', today));
+    assert(!Insights.canSee(S2, 'P008', 'team', 'tm_chem', today));
+    assert(Insights.canSee(S2, 'P006', 'team', 'tm_chem', today));
+    assert(Insights.canSee(S2, 'P028', 'function', 'Café', today));
+    assert(!Insights.canSee(S2, 'P028', 'function', 'Academics', today));
+  });
+  t('review agenda + save', () => {
+    const ag = Insights.reviewAgenda(S2, 'tm_phy', today); assert(ag.lastReview && ag.members.length === 3);
+    throws(() => Core.act(S2, 'P009', 'saveReview', { teamId: 'tm_phy' }, now), /Only the team Lead/);
+    const rv = Core.act(S2, 'P008', 'saveReview', { teamId: 'tm_phy', notes: 'ok', commitments: [{ personId: 'P009', title: 'Finish blueprint' }] }, now);
+    assert.equal(Core.list(rv.commitments).length, 1);
+  });
+  t('recognition', () => assert(Insights.recognition(S2, S2.all('items'), Core.addDays(today, -30)).length >= 3));
+  t('guess function', () => { assert.equal(Insights.guessFunction('CFAL Hostel'), 'Operations'); assert.equal(Insights.guessFunction('Café'), 'Café'); assert.equal(Insights.guessFunction('School Primary'), 'Academics'); assert.equal(Insights.guessFunction('CFAL Front desk'), 'Administration'); });
+  console.log(pass + ' passed incl. insights');
+})();

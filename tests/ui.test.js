@@ -8,7 +8,7 @@ const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'https://example.g
 const w = dom.window, d = w.document;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const $ = s => d.querySelector(s), $$ = s => [...d.querySelectorAll(s)];
-const click = el => { if (!el) throw new Error("missing element after " + checks + " checks, page: " + (d.querySelector("nav a.on")||{}).textContent + " modal:" + !!d.querySelector(".modal")); el.dispatchEvent(new w.MouseEvent('click', { bubbles: true })); };
+const click = el => { if (!el) throw new Error("missing element after " + checks + " checks, page: " + (d.querySelector("nav a.on")||{}).textContent + " modal:" + !!d.querySelector(".modal")); el.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true })); };
 const submit = f => f.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
 const go = async h => { w.location.hash = h; w.dispatchEvent(new w.HashChangeEvent('hashchange')); await sleep(50); };
 const as = async id => { console.log("as", id, checks); if ($('#signout')) { click($('#signout')); await sleep(150); } click($(`[data-demo="${id}"]`)); await sleep(250); };
@@ -101,6 +101,33 @@ let checks = 0; const ok = (c, m) => { if (!c) throw new Error('FAILED: ' + m); 
   // settings save
   await as('P006'); await go('settings'); await sleep(100); $('[name=spanLimit]').value = '12'; submit($('#set-form')); await sleep(250); ok(true);
   ok($('#outbox').textContent.length > 0, 'outbox list');
+  // ---- new: organisation by function, summaries, reports, review, recognition
+  await as('P001'); await go('org'); await sleep(80);
+  ok($$('[data-org-fn]').length >= 5, 'function cards');
+  click($('[data-ent="School"]')); await sleep(60); ok($('[data-ent="School"]').classList.contains('on'), 'entity filter');
+  click($('[data-ent=""]')); await sleep(40);
+  click($('[data-org-fn="Academics"]')); await sleep(60); ok($('h1').textContent === 'Academics', 'function level');
+  click($('[data-sum]')); await sleep(300); ok($('.sumtext') && /verified/.test($('.sumtext').textContent), 'function summary written');
+  click($('[data-org-team="tm_phy"]')); await sleep(60); ok($('h1').textContent === 'Physics', 'team level');
+  click($('[data-crumb=""]')); await sleep(60); ok($('h1').textContent === 'Whole institute', 'breadcrumb back');
+  await go('reports'); await sleep(80);
+  ok(text().includes('By function'), 'org report');
+  $('#r-type').value = 'initiative'; $('#r-type').dispatchEvent(new w.Event('change')); await sleep(60);
+  ok(text().includes('Initiatives'), 'initiative report');
+  $('#r-period').value = 'custom'; $('#r-period').dispatchEvent(new w.Event('change')); await sleep(60); ok($('#r-from'), 'custom dates');
+  await go('wall'); await sleep(60); ok($$('.wall-card').length >= 3, 'recognition wall');
+  await go('settings'); await sleep(100); click($('#b-term')); await sleep(400);
+  await go('chart'); click($('[data-person="P009"]')); await sleep(60); ok($('.modal').textContent.includes('Term summary') && $('.modal .sumtext'), 'person term summary shown');
+  click($('[data-close]'));
+  await as('P008'); await go('review'); await sleep(80);
+  ok(text().includes('Last week') && text().includes('Load by person'), 'review agenda');
+  const f = $('#rv-form'); f.elements.notes.value = 'Good week'; f.elements.c1p.value = 'P010'; f.elements.c1t.value = 'Finish seating plan';
+  submit(f); await sleep(300); ok(text().includes('Good week'), 'review saved');
+  await go('org'); await sleep(60); ok($('h1').textContent === 'Academics', 'lead sees own function only');
+  ok(!$('[data-crumb=""]'), 'lead has no institute level');
+  await as('P009'); ok(!$('a[href="#org"]') && !$('a[href="#review"]'), 'staff: no org or review');
+  ok(text().includes('Finish seating plan') === false, 'commitment not for Latha');
+  await go('reports'); await sleep(60); ok($('#r-type').value === 'person', 'staff report on self');
   console.log(checks + ' UI checks passed');
   if (errors.length) { console.log('ERRORS:', errors); process.exit(1); }
   process.exit(0);

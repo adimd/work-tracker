@@ -42,7 +42,8 @@ var DemoData = (function () {
       P('P031', 'Neil Mascarenhas', 'Marketing / IT', 'MKT', 'Shared', 4, 'P002', 'tm_mkt'),
       P('P032', 'Tanvi Shet', 'Admin Officer', 'A2', 'School', 3, 'P004', 'tm_schooladmin', 'admin')
     ];
-    var Tm = function (id, name, entity, type, leadId, adminIds, extra) { return Object.assign({ id: id, name: name, entity: entity, type: type, leadId: leadId, deputyId: '', adminIds: adminIds || '', endDate: '', initiativeId: '', active: 'true' }, extra || {}); };
+    var FN = { tm_lead: 'Leadership', tm_acadadmin: 'Administration', tm_front: 'Administration', tm_schooladmin: 'Administration', tm_ops: 'Operations', tm_cafe: 'Café', tm_mkt: 'Marketing, IT and finance' };
+    var Tm = function (id, name, entity, type, leadId, adminIds, extra) { return Object.assign({ id: id, name: name, entity: entity, 'function': FN[id] || 'Academics', type: type, leadId: leadId, deputyId: '', adminIds: adminIds || '', endDate: '', initiativeId: '', active: 'true' }, extra || {}); };
     var teams = [
       Tm('tm_lead', 'Leadership', 'Shared', 'home', 'P001'),
       Tm('tm_acadadmin', 'Academic administration', 'College', 'home', 'P006', 'P006'),
@@ -96,6 +97,11 @@ var DemoData = (function () {
       I({ kind: 'task', title: 'Order new café menu boards', assigneeId: '', teamId: 'tm_cafe', createdBy: 'P028', due: D(4), status: 'open' }),
       I({ kind: 'help', title: 'Too much on my plate: three classes covered this week', assigneeId: 'P013', createdBy: 'P013', status: 'blocked', helpReason: 'Too much on my plate: covering three classes this week', helpAt: T(0, 9), helpStep: '0' }),
       I({ kind: 'task', title: 'Send weekly menu and feedback summary', assigneeId: 'P029', createdBy: 'P028', due: D(2), status: 'open', band: '<1' }),
+      I({ kind: 'task', title: 'Replaced 14 corridor tube lights', assigneeId: 'P022', createdBy: 'P007', band: '3-6', status: 'verified', evidence: 'photo: corridor-lights.jpg', evidenceType: 'photo', verifierId: 'P007', verifiedBy: 'P007', verifiedAt: T(-2), completedAt: T(-3), updatedAt: T(-2), thanks: 'Deepak Shetty: Quick work before the parents\' meeting, thank you.' }),
+      I({ kind: 'contribution', title: 'Ran a phonics game session for parents', assigneeId: 'P025', createdBy: 'P025', initiativeId: 'in_inquiry', band: '1-3', status: 'verified', evidence: 'https://drive.google.com/demo-phonics', evidenceType: 'link', verifierId: 'P023', verifiedBy: 'P023', verifiedAt: T(-1), completedAt: T(-2), updatedAt: T(-1) }),
+      I({ kind: 'task', title: 'Collected fees from 18 families after reminders', assigneeId: 'P019', createdBy: 'P018', band: '3-6', status: 'verified', evidence: 'https://docs.google.com/demo-fee-sheet', evidenceType: 'link', verifierId: 'P018', verifiedBy: 'P018', verifiedAt: T(-4), completedAt: T(-5), updatedAt: T(-4) }),
+      I({ kind: 'contribution', title: 'Designed a new healthy breakfast menu with students', assigneeId: 'P030', createdBy: 'P030', band: '3-6', status: 'verified', evidence: 'photo: menu-board.jpg', evidenceType: 'photo', verifierId: 'P028', verifiedBy: 'P028', verifiedAt: T(-3), completedAt: T(-4), updatedAt: T(-3), thanks: 'Victor Saldanha: Students love it.' }),
+      I({ kind: 'contribution', title: 'Built a Maths problem set on probability', assigneeId: 'P015', createdBy: 'P015', initiativeId: 'in_dpp', band: '3-6', status: 'verified', evidence: 'https://drive.google.com/demo-prob', evidenceType: 'link', verifierId: 'P006', verifiedBy: 'P006', verifiedAt: T(-6), completedAt: T(-7), updatedAt: T(-6) }),
       I({ kind: 'contribution', title: 'Trained 8 student volunteers on telescope set-up', assigneeId: 'P010', createdBy: 'P010', initiativeId: 'in_fete', band: '1-3', status: 'verified', evidence: 'Witness: Imran Sheikh', evidenceType: 'witness', verifierId: 'P008', verifiedBy: 'P008', verifiedAt: T(-8), completedAt: T(-9), updatedAt: T(-8) })
     ];
     var duties = [
@@ -110,7 +116,7 @@ var DemoData = (function () {
       { id: 'dc1', initiativeId: 'in_dpp', decision: 'Scale up', note: 'Extend the problem bank to Maths next term', byId: 'P005', at: T(-20), followups: '' }
     ];
     var events = items.map(function (it, i) { return { id: 'ev_demo' + i, itemId: it.id, actorId: it.createdBy, action: 'created', note: Core.KINDS[it.kind] || '', at: it.createdAt }; });
-    return { people: people, teams: teams, memberships: memberships, priorities: priorities, initiatives: initiatives, items: items, events: events, duties: duties, decisions: decisions, settings: [{ key: 'orgName', value: 'Work Tracker (demo)' }], outbox: [] };
+    return { people: people, teams: teams, memberships: memberships, priorities: priorities, initiatives: initiatives, items: items, events: events, duties: duties, decisions: decisions, settings: [{ key: 'orgName', value: 'Work Tracker (demo)' }, { key: 'termStart', value: D(-60) }], outbox: [], summaries: [], reviews: [{ id: 'rv_demo1', teamId: 'tm_phy', date: D(-7), heldBy: 'P008', notes: 'Agreed to finish Test 2 blueprint first.', commitments: 'it_demo2' }] };
   }
   return { build: build };
 })();
